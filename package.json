@@ -1,0 +1,90 @@
+{
+  "name": "intellilog",
+  "displayName": "IntelliLog",
+  "description": "Smart debugging shortcuts for JavaScript, TypeScript, Python, Go, and PHP.",
+  "version": "0.0.3",
+  "icon": "icon.png",
+  "publisher": "ShubhamTiwari",
+  "author": {
+    "name": "Shubham Tiwari",
+    "url": "https://github.com/shubtiwari"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shubtiwari/intellilog.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shubtiwari/intellilog/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Snippets"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "IntelliLog",
+      "properties": {
+        "intellilog.logPrefix": {
+          "type": "string",
+          "default": "🎯",
+          "description": "The emoji or prefix string inserted before the variable name in console logs."
+        },
+        "intellilog.insertArrow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to insert an arrow (=>) after the variable name in the log string."
+        },
+        "intellilog.useColorIcons": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, replaces the logPrefix with color-coded emojis based on the log type (e.g. 🟥 for errors, 🟦 for logs, 📊 for tables)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "intellilog.smartLog",
+        "title": "IntelliLog: Smart Insert Console"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "intellilog.smartLog",
+        "key": "cmd+alt+l",
+        "win": "ctrl+alt+l",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.56.1",
+    "eslint": "^9.39.3",
+    "esbuild": "^0.27.3",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
