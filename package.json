@@ -2,7 +2,7 @@
   "name": "intellilog",
   "displayName": "IntelliLog",
   "description": "Smart debugging shortcuts for JavaScript, TypeScript, Python, Go, and PHP.",
-  "version": "0.0.3",
+  "version": "0.0.1",
   "icon": "icon.png",
   "publisher": "ShubhamTiwari",
   "author": {
