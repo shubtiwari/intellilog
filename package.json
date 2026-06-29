@@ -1,8 +1,8 @@
 {
   "name": "intellilog",
   "displayName": "IntelliLog",
-  "description": "Smart debugging shortcuts for JavaScript, TypeScript, Python, Go, and PHP.",
-  "version": "0.0.1",
+  "description": "Smart log insertion for JS, TS, Python, Go, PHP, Ruby, Rust, and Flutter/Dart — file+line context, gutter icons, function wrap, log cleanup, and structured JSON output.",
+  "version": "0.2.0",
   "icon": "icon.png",
   "publisher": "intellilog",
   "author": {
@@ -20,6 +20,7 @@
     "vscode": "^1.90.0"
   },
   "categories": [
+    "Programming Languages",
     "Other",
     "Snippets"
   ],
@@ -32,24 +33,40 @@
         "intellilog.logPrefix": {
           "type": "string",
           "default": "🎯",
-          "description": "The emoji or prefix string inserted before the variable name in console logs."
+          "description": "The emoji or prefix string inserted before the variable name in log statements."
         },
         "intellilog.insertArrow": {
           "type": "boolean",
           "default": true,
-          "description": "Whether to insert an arrow (=>) after the variable name in the log string."
+          "description": "Whether to insert a colon (:) after the variable name in the log string."
         },
-        "intellilog.useColorIcons": {
+        "intellilog.structuredOutput": {
           "type": "boolean",
-          "default": true,
-          "description": "If enabled, replaces the logPrefix with color-coded emojis based on the log type (e.g. 🟥 for errors, 🟦 for logs, 📊 for tables)."
+          "default": false,
+          "description": "Output logs as JSON.stringify / json.dumps for use with log aggregators like Datadog, Splunk, or CloudWatch. Supported in JS/TS and Python."
         }
       }
     },
     "commands": [
       {
         "command": "intellilog.smartLog",
-        "title": "IntelliLog: Smart Insert Console"
+        "title": "IntelliLog: Smart Insert Log"
+      },
+      {
+        "command": "intellilog.wrapFunction",
+        "title": "IntelliLog: Wrap Function with Entry Log"
+      },
+      {
+        "command": "intellilog.commentAllLogs",
+        "title": "IntelliLog: Comment All Logs"
+      },
+      {
+        "command": "intellilog.uncommentAllLogs",
+        "title": "IntelliLog: Uncomment All Logs"
+      },
+      {
+        "command": "intellilog.deleteAllLogs",
+        "title": "IntelliLog: Delete All Logs"
       }
     ],
     "keybindings": [
@@ -57,6 +74,24 @@
         "command": "intellilog.smartLog",
         "key": "cmd+alt+l",
         "win": "ctrl+alt+l",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "intellilog.wrapFunction",
+        "key": "cmd+alt+w",
+        "win": "ctrl+alt+w",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "intellilog.commentAllLogs",
+        "key": "cmd+alt+/",
+        "win": "ctrl+alt+/",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "intellilog.deleteAllLogs",
+        "key": "cmd+alt+d",
+        "win": "ctrl+alt+d",
         "when": "editorTextFocus"
       }
     ]

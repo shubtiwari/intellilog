@@ -3,6 +3,9 @@ import { JavascriptProvider } from "./javascript";
 import { PythonProvider } from "./python";
 import { GoProvider } from "./go";
 import { PhpProvider } from "./php";
+import { DartProvider } from "./dart";
+import { RubyProvider } from "./ruby";
+import { RustProvider } from "./rust";
 
 export class ProviderRegistry {
   private providers = new Map<string, LanguageProvider>();
@@ -12,6 +15,9 @@ export class ProviderRegistry {
     this.registerProvider(new PythonProvider());
     this.registerProvider(new GoProvider());
     this.registerProvider(new PhpProvider());
+    this.registerProvider(new DartProvider());
+    this.registerProvider(new RubyProvider());
+    this.registerProvider(new RustProvider());
   }
 
   private registerProvider(provider: LanguageProvider) {

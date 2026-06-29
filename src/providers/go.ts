@@ -1,6 +1,8 @@
 import { LanguageProvider, IntelliLogConfig } from "./types";
 import { getPrefix } from "./colors";
 
+const MARKER = "// intellilog";
+
 export class GoProvider implements LanguageProvider {
   supportedLanguages = ["go"];
 
@@ -9,43 +11,36 @@ export class GoProvider implements LanguageProvider {
     hoverText: string,
     indentation: string,
     config: IntelliLogConfig,
+    fileName: string,
+    lineNumber: number,
   ): string {
-    const cleanedString = this.formatSelectedVariable(selectedText);
+    const prefix = getPrefix(config);
+    const location = `[${fileName}:${lineNumber}]`;
     const { suffix } = config;
 
+    // Multi-variable: "userId, email, role"
+    const variables = selectedText.split(",").map((v) => v.trim()).filter(Boolean);
+    if (variables.length > 1) {
+      const fmtStr = variables.map((v) => `${v}=%v`).join(" ");
+      return `${indentation}fmt.Printf("${prefix} ${location} ${fmtStr}\\n", ${variables.join(", ")}) ${MARKER}\n`;
+    }
+
+    const cleanedString = selectedText;
     const lowerText = cleanedString.toLowerCase();
 
-    // JSON representation
     if (lowerText.includes("body") || lowerText.includes("payload") || lowerText.includes("json")) {
-      return `${indentation}b, _ := json.MarshalIndent(${selectedText}, "", "  ")\n${indentation}fmt.Printf("${getPrefix("log", config)} ${cleanedString}${suffix}\\n%s\\n", string(b))\n`;
+      return `${indentation}b, _ := json.MarshalIndent(${selectedText}, "", "  ") ${MARKER}\n${indentation}fmt.Printf("${prefix} ${location} ${cleanedString}${suffix}\\n%s\\n", string(b)) ${MARKER}\n`;
     }
-
-    // Errors
     if (lowerText.includes("err") || hoverText.includes("error")) {
-      return `${indentation}log.Printf("${getPrefix("error", config)} Error in ${cleanedString}: %v\\n", ${selectedText})\n`;
+      return `${indentation}log.Printf("${prefix} ${location} Error in ${cleanedString}: %v\\n", ${selectedText}) ${MARKER}\n`;
     }
-
-    // Type inspection
     if (lowerText.includes("type")) {
-      return `${indentation}fmt.Printf("${getPrefix("debug", config)} Type of ${cleanedString}${suffix} %T\\n", ${selectedText})\n`;
+      return `${indentation}fmt.Printf("${prefix} ${location} Type of ${cleanedString}${suffix} %T\\n", ${selectedText}) ${MARKER}\n`;
+    }
+    if (lowerText.includes("user") || lowerText.includes("data") || lowerText.includes("obj") || hoverText.includes("struct") || hoverText.includes("map[")) {
+      return `${indentation}fmt.Printf("${prefix} ${location} ${cleanedString}${suffix} %+v\\n", ${selectedText}) ${MARKER}\n`;
     }
 
-    // Detailed Structs/Maps
-    if (
-      lowerText.includes("user") ||
-      lowerText.includes("data") ||
-      lowerText.includes("obj") ||
-      hoverText.includes("struct") ||
-      hoverText.includes("map[")
-    ) {
-      return `${indentation}fmt.Printf("${getPrefix("table", config)} ${cleanedString}${suffix} %+v\\n", ${selectedText})\n`;
-    }
-
-    // Default
-    return `${indentation}fmt.Printf("${getPrefix("log", config)} ${cleanedString}${suffix} %v\\n", ${selectedText})\n`;
-  }
-
-  private formatSelectedVariable(selectedText: string): string {
-    return selectedText;
+    return `${indentation}fmt.Printf("${prefix} ${location} ${cleanedString}${suffix} %v\\n", ${selectedText}) ${MARKER}\n`;
   }
 }
