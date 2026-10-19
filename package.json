@@ -2,7 +2,7 @@
   "name": "intellilog",
   "displayName": "IntelliLog",
   "description": "Smart log insertion for JS, TS, Python, Go, PHP, Ruby, Rust, and Flutter/Dart — file+line context, gutter icons, function entry logs, one-command cleanup, and structured JSON output.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "icon": "icon.png",
   "publisher": "intellilog",
   "license": "MIT",
