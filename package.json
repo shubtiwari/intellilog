@@ -1,10 +1,11 @@
 {
   "name": "intellilog",
   "displayName": "IntelliLog",
-  "description": "Smart log insertion for JS, TS, Python, Go, PHP, Ruby, Rust, and Flutter/Dart — file+line context, gutter icons, function wrap, log cleanup, and structured JSON output.",
+  "description": "Smart log insertion for JS, TS, Python, Go, PHP, Ruby, Rust, and Flutter/Dart — file+line context, gutter icons, function entry logs, one-command cleanup, and structured JSON output.",
   "version": "0.2.0",
   "icon": "icon.png",
   "publisher": "intellilog",
+  "license": "MIT",
   "author": {
     "name": "Shubham Tiwari",
     "url": "https://github.com/shubtiwari"
@@ -20,11 +21,29 @@
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Programming Languages",
-    "Other",
-    "Snippets"
+    "Other"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "log",
+    "console.log",
+    "debug",
+    "logging",
+    "print",
+    "debugPrint",
+    "println",
+    "javascript",
+    "typescript",
+    "python",
+    "go",
+    "php",
+    "ruby",
+    "rust",
+    "dart",
+    "flutter"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "configuration": {
@@ -35,10 +54,16 @@
           "default": "🎯",
           "description": "The emoji or prefix string inserted before the variable name in log statements."
         },
+        "intellilog.insertColon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to insert a colon (:) after the variable name in the log label, e.g. `🎯 [app.ts:12] user:`."
+        },
         "intellilog.insertArrow": {
           "type": "boolean",
           "default": true,
-          "description": "Whether to insert a colon (:) after the variable name in the log string."
+          "description": "Deprecated: use `intellilog.insertColon`.",
+          "markdownDeprecationMessage": "Renamed to `#intellilog.insertColon#`. This setting is still honoured until `insertColon` is set."
         },
         "intellilog.structuredOutput": {
           "type": "boolean",
@@ -72,26 +97,26 @@
     "keybindings": [
       {
         "command": "intellilog.smartLog",
-        "key": "cmd+alt+l",
-        "win": "ctrl+alt+l",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
         "when": "editorTextFocus"
       },
       {
         "command": "intellilog.wrapFunction",
-        "key": "cmd+alt+w",
-        "win": "ctrl+alt+w",
+        "key": "ctrl+alt+w",
+        "mac": "cmd+alt+w",
         "when": "editorTextFocus"
       },
       {
         "command": "intellilog.commentAllLogs",
-        "key": "cmd+alt+/",
-        "win": "ctrl+alt+/",
+        "key": "ctrl+alt+/",
+        "mac": "cmd+alt+/",
         "when": "editorTextFocus"
       },
       {
         "command": "intellilog.deleteAllLogs",
-        "key": "cmd+alt+d",
-        "win": "ctrl+alt+d",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
         "when": "editorTextFocus"
       }
     ]
@@ -111,15 +136,15 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.90.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.56.1",
-    "eslint": "^9.39.3",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
     "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.56.1"
   }
 }

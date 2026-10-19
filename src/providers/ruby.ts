@@ -1,10 +1,15 @@
-import { LanguageProvider, IntelliLogConfig } from "./types";
-import { getPrefix } from "./colors";
+import { LanguageProvider, IntelliLogConfig, FunctionInfo, BodyStyle } from "./types";
+import { escapeString, extractGroup, hasToken, labelText, nameTokens, splitTopLevel, splitVariables } from "./utils";
 
 const MARKER = "# intellilog";
+/** Literal text inside a double-quoted Ruby string: `#` must not start an interpolation. */
+const lit = (s: string) => escapeString(s, '"').replace(/#/g, "\\#");
+const RUBY_VARIABLE = /^@{0,2}[A-Za-z_]\w*[?!]?(?:\.[A-Za-z_]\w*[?!]?)*$/;
 
 export class RubyProvider implements LanguageProvider {
   supportedLanguages = ["ruby"];
+  commentToken = "#" as const;
+  bodyStyle: BodyStyle = "line";
 
   buildLogStatement(
     selectedText: string,
@@ -14,40 +19,57 @@ export class RubyProvider implements LanguageProvider {
     fileName: string,
     lineNumber: number,
   ): string {
-    const prefix = getPrefix(config);
+    const { prefix, suffix } = config;
     const location = `[${fileName}:${lineNumber}]`;
-    const { suffix } = config;
+    const expr = selectedText.trim();
 
     // Multi-variable: "user_id, email, role"
-    const variables = selectedText.split(",").map((v) => v.trim()).filter(Boolean);
-    if (variables.length > 1) {
-      const parts = variables.map((v) => `${v}: \#{${v}}`).join(", ");
-      return `${indentation}puts "${prefix} ${location} ${parts}" ${MARKER}\n`;
+    const variables = splitVariables(expr, RUBY_VARIABLE);
+    if (variables) {
+      const parts = variables.map((v) => `${lit(v)}: #{${v}.inspect}`).join(", ");
+      return `${indentation}puts "${lit(`${prefix} ${location}`)} ${parts}" ${MARKER}\n`;
     }
 
-    const lowerText = selectedText.toLowerCase();
+    const tokens = nameTokens(expr);
+    const label = lit(`${prefix} ${location} ${labelText(expr)}${suffix}`);
 
-    // Errors / exceptions
-    if (lowerText.includes("err") || lowerText.includes("exception")) {
-      return `${indentation}puts "${prefix} ${location} Error${suffix} \#{${selectedText}.message}" ${MARKER}\n${indentation}puts ${selectedText}.backtrace.first(5).join("\\n") ${MARKER}\n`;
+    // Errors / exceptions — backtrace is nil until the exception has been raised.
+    if (hasToken(tokens, "err", "error", "exception", "exc") || expr === "e") {
+      return `${indentation}puts "${label} #{${expr}.inspect}"; puts ${expr}.backtrace.first(5).join("\\n") if ${expr}.respond_to?(:backtrace) && ${expr}.backtrace ${MARKER}\n`;
     }
 
     // JSON payloads / hashes
-    if (lowerText.includes("payload") || lowerText.includes("json") || lowerText.includes("hash") || hoverText.includes("Hash")) {
-      return `${indentation}require 'json'; puts "${prefix} ${location} ${selectedText}${suffix}\\n\#{JSON.pretty_generate(${selectedText})}" ${MARKER}\n`;
-    }
-
-    // Arrays / collections
-    if (lowerText.includes("arr") || lowerText.includes("list") || lowerText.includes("items") || hoverText.includes("Array")) {
-      return `${indentation}puts "${prefix} ${location} ${selectedText}${suffix} \#{${selectedText}.inspect}" ${MARKER}\n`;
+    if (hasToken(tokens, "payload", "json", "hash", "params") || hoverText.includes("Hash")) {
+      return `${indentation}require 'json'; puts "${label}\\n#{JSON.pretty_generate(${expr})}" ${MARKER}\n`;
     }
 
     // Object inspection (pp for complex objects)
-    if (lowerText.includes("obj") || lowerText.includes("data") || lowerText.includes("result")) {
-      return `${indentation}puts "${prefix} ${location} ${selectedText}${suffix}"; pp ${selectedText} ${MARKER}\n`;
+    if (hasToken(tokens, "obj", "object", "data", "result", "results", "record")) {
+      return `${indentation}puts "${label}"; pp ${expr} ${MARKER}\n`;
     }
 
-    // Default
-    return `${indentation}puts "${prefix} ${location} ${selectedText}${suffix} \#{${selectedText}.inspect}" ${MARKER}\n`;
+    // Default — arrays and scalars both read well with #inspect
+    return `${indentation}puts "${label} #{${expr}.inspect}" ${MARKER}\n`;
+  }
+
+  parseFunction(signature: string): FunctionInfo | null {
+    const s = signature.trim();
+    const m = s.match(/^def\s+(?:self\.)?([A-Za-z_]\w*[?!=]?)/);
+    if (!m) { return null; }
+    const rest = s.slice(m[0].length);
+    const open = rest.search(/\S/);
+    const raw = rest[open] === "("
+      ? extractGroup(rest, open)?.inner ?? ""
+      : rest.split(";")[0]; // `def greet name, greeting = "hi"`
+    const params = splitTopLevel(raw)
+      .map((p) => p.replace(/^(?:\*{1,2}|&)/, "").split(/[\s=:]/)[0])
+      .filter((p) => /^[A-Za-z_]\w*$/.test(p));
+    return { name: m[1], params };
+  }
+
+  buildFunctionEntryLog(info: FunctionInfo, indentation: string, config: IntelliLogConfig, fileName: string, lineNumber: number): string {
+    const head = lit(`${config.prefix} [${fileName}:${lineNumber}] → ${info.name} called`);
+    const params = info.params.length > 0 ? ` | ${info.params.map((p) => `${p}=#{${p}.inspect}`).join(", ")}` : "";
+    return `${indentation}puts "${head}${params}" ${MARKER}\n`;
   }
 }

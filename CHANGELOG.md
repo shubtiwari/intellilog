@@ -2,6 +2,35 @@
 
 All notable changes to IntelliLog are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **JS/TS `console.table` / `console.dir` printed only the label** — both take a single value, so the label is now printed by a separate `console.log` first.
+- **Name heuristics matched substrings** — `country`/`accountId` became `console.count`, `createdTime` became `console.time` (value never printed), `groupId` opened an unclosed `console.group`, `referrer` became `console.error`. Names are now matched by whole words, and methods that don't print the value (`count`, `time`, `timeLog`, `group`, `groupEnd`) are no longer chosen automatically.
+- **PHP could insert `die(var_dump(…))`** for names like `$audience` or `$exitCode` — removed.
+- **Function entry logs**: PHP produced `$$a` / type names instead of parameters; Ruby produced invalid syntax; Python could be inserted at column 0 when the next line was blank.
+- **Selections containing commas** (`[1, 2]`, `fn(a, b)`) were treated as multiple variables.
+- **Quotes, `%`, braces, `$` and `#{`** in the selection or prefix are escaped for each language's string syntax.
+- **Structured output** no longer uses `console.time` & co., and serialises `Error` objects instead of `{}`.
+- **Python** error logs print the value and that exception's own traceback (instead of `traceback.print_exc()`).
+- **Ruby** error logs no longer crash on exceptions that were never raised (`backtrace` is `nil`).
+- **Dart** interpolates member expressions correctly (`${user.name}`), uses `print` in non-Flutter files, and adds `dart:convert` when needed.
+- **Go** JSON logs no longer redeclare `b` when used twice in a scope; missing `fmt` / `log` / `encoding/json` imports are added (and removed by Delete All Logs).
+- **Delete / comment / uncomment** handle logs that Prettier or Black wrapped over several lines.
+- **Inserting on the last line** of a file without a trailing newline no longer appends to that line.
+- **Function detection** supports multi-line signatures, TS generics, `async` methods, destructured parameters, and any Dart return type (e.g. `Widget build(BuildContext context)`); expression-bodied functions are reported instead of getting a log outside the function.
+- **Keybindings** on Linux used the Meta key (`cmd+…`); they now use `Ctrl+Alt+…`.
+- **Gutter icons and the status bar** appear on startup (`onStartupFinished`), refresh all visible editors, and are debounced instead of rescanning the file twice per keystroke.
+
+### Changed
+
+- `intellilog.insertArrow` is renamed to `intellilog.insertColon` (the old setting still works until the new one is set).
+- Function-wrap logic moved into the language providers; removed the unused `colors.ts`.
+- README rewritten to match the actual output of every language.
+- Added `license` and `keywords` to the manifest; removed the "Programming Languages" category.
+- Upgraded `@vscode/test-electron` to 3.x so `npm test` works with VS Code ≥ 1.110.
+
 ## [0.2.0] - 2026-06-29
 
 ### Added

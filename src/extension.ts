@@ -1,83 +1,84 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { providerRegistry } from "./providers/registry";
-import { IntelliLogConfig, LanguageProvider } from "./providers/types";
+import { ImportEdit, IntelliLogConfig, LanguageProvider } from "./providers/types";
+import { commentLine, findLogBlocks, LogBlock, uncommentLine } from "./logBlocks";
+import { collectSignature, findBodyInsertion } from "./functionWrap";
 
-interface LogData {
-  selection: vscode.Selection;
-  logStatement: string;
+interface LogRequest {
+  selectedText: string;
+  hoverText: string;
+  indentation: string;
+  /** 0-based line the log is inserted after. */
+  afterLine: number;
 }
 
-interface FunctionInfo {
-  name: string;
-  params: string[];
-}
+const REFRESH_DELAY_MS = 150;
 
 export function activate(context: vscode.ExtensionContext) {
 
-  // ─── Gutter Decorations ────────────────────────────────────────────────────
+  // ─── Gutter Decorations & Status Bar ───────────────────────────────────────
 
   const gutterDecorationType = vscode.window.createTextEditorDecorationType({
     gutterIconPath: vscode.Uri.joinPath(context.extensionUri, "resources", "gutter-icon.svg"),
     gutterIconSize: "contain",
   });
 
-  function refreshGutterDecorations(editor: vscode.TextEditor) {
-    const ranges: vscode.Range[] = [];
-    for (let i = 0; i < editor.document.lineCount; i++) {
-      const line = editor.document.lineAt(i);
-      if (isIntelliLogLine(line.text)) { ranges.push(line.range); }
-    }
-    editor.setDecorations(gutterDecorationType, ranges);
-  }
-
-  if (vscode.window.activeTextEditor) {
-    refreshGutterDecorations(vscode.window.activeTextEditor);
-  }
-
-  // ─── Status Bar ────────────────────────────────────────────────────────────
-
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBarItem.command = "intellilog.showQuickActions";
   statusBarItem.tooltip = "IntelliLog logs in this file — click to manage";
 
-  function updateStatusBar(document?: vscode.TextDocument) {
-    const doc = document ?? vscode.window.activeTextEditor?.document;
-    if (!doc) { statusBarItem.hide(); return; }
-    let count = 0;
-    for (let i = 0; i < doc.lineCount; i++) {
-      if (isIntelliLogLine(doc.lineAt(i).text)) { count++; }
+  /** Scans the document once and updates every visible editor showing it plus the status bar. */
+  function refresh(document: vscode.TextDocument) {
+    const blocks = findDocumentLogBlocks(document);
+    const ranges = blocks.map((b) => new vscode.Range(b.start, 0, b.start, 0));
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document === document) { editor.setDecorations(gutterDecorationType, ranges); }
     }
-    if (count > 0) {
-      statusBarItem.text = `🎯 ${count} log${count === 1 ? "" : "s"}`;
-      statusBarItem.show();
-    } else {
-      statusBarItem.hide();
+    if (vscode.window.activeTextEditor?.document === document) {
+      const count = blocks.filter((b) => !b.isImport).length;
+      if (count > 0) {
+        statusBarItem.text = `🎯 ${count} log${count === 1 ? "" : "s"}`;
+        statusBarItem.show();
+      } else {
+        statusBarItem.hide();
+      }
     }
   }
 
-  updateStatusBar();
+  const pendingRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
+  function scheduleRefresh(document: vscode.TextDocument) {
+    const key = document.uri.toString();
+    clearTimeout(pendingRefreshes.get(key));
+    pendingRefreshes.set(key, setTimeout(() => {
+      pendingRefreshes.delete(key);
+      refresh(document);
+    }, REFRESH_DELAY_MS));
+  }
+
+  function refreshVisibleEditors() {
+    new Set(vscode.window.visibleTextEditors.map((e) => e.document)).forEach(refresh);
+    if (!vscode.window.activeTextEditor) { statusBarItem.hide(); }
+  }
+
+  refreshVisibleEditors();
 
   // ─── Event Listeners ───────────────────────────────────────────────────────
 
   context.subscriptions.push(
     gutterDecorationType,
     statusBarItem,
+    { dispose: () => pendingRefreshes.forEach((timer) => clearTimeout(timer)) },
 
     vscode.window.onDidChangeActiveTextEditor((editor) => {
-      if (editor) {
-        refreshGutterDecorations(editor);
-        updateStatusBar(editor.document);
-      } else {
-        statusBarItem.hide();
-      }
+      if (editor) { refresh(editor.document); } else { statusBarItem.hide(); }
     }),
 
+    vscode.window.onDidChangeVisibleTextEditors(refreshVisibleEditors),
+
     vscode.workspace.onDidChangeTextDocument((event) => {
-      const editor = vscode.window.activeTextEditor;
-      if (editor && editor.document === event.document) {
-        refreshGutterDecorations(editor);
-        updateStatusBar(event.document);
+      if (vscode.window.visibleTextEditors.some((e) => e.document === event.document)) {
+        scheduleRefresh(event.document);
       }
     }),
 
@@ -90,126 +91,110 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("intellilog.smartLog", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) { return; }
+      const provider = getProviderOrWarn(editor.document);
+      if (!provider) { return; }
 
-      const provider = providerRegistry.getProviderForLanguage(editor.document.languageId);
-      if (!provider) {
-        vscode.window.showWarningMessage(`IntelliLog: Language '${editor.document.languageId}' is not supported yet!`);
-        return;
-      }
+      const document = editor.document;
+      const requests = (await Promise.all(
+        editor.selections.filter((s) => !s.isEmpty).map((s) => buildLogRequest(editor, s, provider)),
+      )).sort((a, b) => a.afterLine - b.afterLine);
 
-      const config = fetchIntelliLogConfig();
-      const fileName = path.basename(editor.document.fileName);
-
-      const logDataList = (
-        await Promise.all(editor.selections.map((sel) =>
-          buildLogDataForSelection(editor, sel, config, provider, fileName)
-        ))
-      ).filter((d): d is LogData => d !== null);
-
-      if (logDataList.length === 0) {
+      if (requests.length === 0) {
         vscode.window.showWarningMessage("IntelliLog: Please select a variable first!");
         return;
       }
 
-      await editor.edit((editBuilder) => {
-        for (const data of logDataList.sort((a, b) => b.selection.end.line - a.selection.end.line)) {
-          editBuilder.insert(new vscode.Position(data.selection.end.line + 1, 0), data.logStatement);
-        }
-      });
-      refreshGutterDecorations(editor);
-      updateStatusBar(editor.document);
+      const config = fetchIntelliLogConfig();
+      const fileName = path.basename(document.fileName);
+      const documentText = document.getText();
+      const build = (r: LogRequest, lineNumber: number) =>
+        provider.buildLogStatement(r.selectedText, r.hoverText, r.indentation, config, fileName, lineNumber, documentText);
+
+      // First pass only decides which imports are needed; the second pass computes each
+      // label's final line number, accounting for imports and logs inserted above it.
+      const imports = provider.getImportEdits?.(documentText, requests.map((r) => build(r, 0)).join("")) ?? [];
+      const inserts: ImportEdit[] = [];
+      for (const r of requests) {
+        const linesAbove = countLinesInsertedBefore(imports, r.afterLine) + countLinesInsertedBefore(inserts, r.afterLine);
+        inserts.push({ line: r.afterLine + 1, text: build(r, r.afterLine + 1 + linesAbove) });
+      }
+
+      await applyInserts(editor, [...imports, ...inserts]);
+      refresh(document);
     }),
 
     vscode.commands.registerCommand("intellilog.wrapFunction", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) { return; }
+      const provider = getProviderOrWarn(editor.document);
+      if (!provider) { return; }
 
-      const lineIndex = editor.selection.active.line;
-      const lineText = editor.document.lineAt(lineIndex).text;
-      const funcInfo = detectFunction(lineText, editor.document.languageId);
+      const document = editor.document;
+      const lines = documentLines(document);
+      const startLine = editor.selection.active.line;
+      const signature = collectSignature(lines, startLine, provider.bodyStyle, provider.commentToken, provider.quotes);
+      const info = signature.ok ? provider.parseFunction(signature.text) : null;
 
-      if (!funcInfo) {
-        vscode.window.showWarningMessage("IntelliLog: No function detected on this line. Place your cursor on a function definition.");
+      if (!signature.ok && signature.reason === "no-block-body") {
+        vscode.window.showWarningMessage("IntelliLog: This function has no multi-line body to insert a log into.");
+        return;
+      }
+      if (!signature.ok || !info) {
+        vscode.window.showWarningMessage("IntelliLog: No function detected on this line. Place your cursor on the first line of a function definition.");
         return;
       }
 
-      const indentation = lineText.match(/^\s*/)?.[0] ?? "";
-      const bodyIndentation = lineIndex + 1 < editor.document.lineCount
-        ? editor.document.lineAt(lineIndex + 1).text.match(/^\s*/)?.[0] ?? (indentation + "  ")
-        : indentation + "  ";
+      const signatureIndentation = indentationOf(lines[startLine]);
+      const { insertLine, bodyIndentation } = findBodyInsertion(lines, signature.endLine, provider.bodyStyle, signatureIndentation);
+      const indentation = bodyIndentation ?? signatureIndentation + indentUnit(editor);
 
       const config = fetchIntelliLogConfig();
-      const fileName = path.basename(editor.document.fileName);
-      const entryLog = buildFunctionEntryLog(funcInfo, editor.document.languageId, config, fileName, lineIndex + 1, bodyIndentation);
+      const fileName = path.basename(document.fileName);
+      const documentText = document.getText();
+      const build = (lineNumber: number) =>
+        provider.buildFunctionEntryLog(info, indentation, config, fileName, lineNumber, documentText);
 
-      await editor.edit((editBuilder) => {
-        editBuilder.insert(new vscode.Position(lineIndex + 1, 0), entryLog);
-      });
-      refreshGutterDecorations(editor);
-      updateStatusBar(editor.document);
+      const imports = provider.getImportEdits?.(documentText, build(0)) ?? [];
+      const entryLog = build(startLine + 1 + countLinesInsertedBefore(imports, startLine));
+
+      await applyInserts(editor, [...imports, { line: insertLine, text: entryLog }]);
+      refresh(document);
     }),
 
     vscode.commands.registerCommand("intellilog.commentAllLogs", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) { return; }
-      const commentChar = getCommentChar(editor.document.languageId);
-      let count = 0;
-      await editor.edit((editBuilder) => {
-        for (let i = 0; i < editor.document.lineCount; i++) {
-          const line = editor.document.lineAt(i);
-          if (!isIntelliLogLine(line.text)) { continue; }
-          const trimmedContent = line.text.trimStart();
-          if (trimmedContent.startsWith("//") || trimmedContent.startsWith("#")) { continue; }
-          const ind = line.text.match(/^\s*/)?.[0] ?? "";
-          editBuilder.replace(line.range, `${ind}${commentChar} ${trimmedContent}`);
-          count++;
-        }
-      });
-      refreshGutterDecorations(editor);
-      updateStatusBar(editor.document);
-      vscode.window.showInformationMessage(`IntelliLog: Commented ${count} log statement(s).`);
+      const provider = editor && getProviderOrWarn(editor.document);
+      if (!editor || !provider) { return; }
+
+      const blocks = findDocumentLogBlocks(editor.document).filter((b) => !b.commented);
+      await replaceBlockLines(editor, blocks, (line) => commentLine(line, provider.commentToken));
+      refresh(editor.document);
+      vscode.window.showInformationMessage(`IntelliLog: Commented ${countStatements(blocks)} log statement(s).`);
     }),
 
     vscode.commands.registerCommand("intellilog.uncommentAllLogs", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) { return; }
-      let count = 0;
-      await editor.edit((editBuilder) => {
-        for (let i = 0; i < editor.document.lineCount; i++) {
-          const line = editor.document.lineAt(i);
-          if (!isIntelliLogLine(line.text)) { continue; }
-          const trimmedContent = line.text.trimStart();
-          const ind = line.text.match(/^\s*/)?.[0] ?? "";
-          let uncommented: string;
-          if (trimmedContent.startsWith("// ")) { uncommented = trimmedContent.slice(3); }
-          else if (trimmedContent.startsWith("//")) { uncommented = trimmedContent.slice(2); }
-          else if (trimmedContent.startsWith("# ")) { uncommented = trimmedContent.slice(2); }
-          else if (trimmedContent.startsWith("#")) { uncommented = trimmedContent.slice(1); }
-          else { continue; }
-          editBuilder.replace(line.range, `${ind}${uncommented}`);
-          count++;
-        }
-      });
-      refreshGutterDecorations(editor);
-      updateStatusBar(editor.document);
-      vscode.window.showInformationMessage(`IntelliLog: Uncommented ${count} log statement(s).`);
+      const provider = editor && getProviderOrWarn(editor.document);
+      if (!editor || !provider) { return; }
+
+      const blocks = findDocumentLogBlocks(editor.document).filter((b) => b.commented);
+      await replaceBlockLines(editor, blocks, (line) => uncommentLine(line, provider.commentToken));
+      refresh(editor.document);
+      vscode.window.showInformationMessage(`IntelliLog: Uncommented ${countStatements(blocks)} log statement(s).`);
     }),
 
     vscode.commands.registerCommand("intellilog.deleteAllLogs", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) { return; }
-      let count = 0;
+      const provider = editor && getProviderOrWarn(editor.document);
+      if (!editor || !provider) { return; }
+
+      const document = editor.document;
+      const blocks = findDocumentLogBlocks(document);
       await editor.edit((editBuilder) => {
-        for (let i = 0; i < editor.document.lineCount; i++) {
-          const line = editor.document.lineAt(i);
-          if (!isIntelliLogLine(line.text)) { continue; }
-          editBuilder.delete(line.rangeIncludingLineBreak);
-          count++;
-        }
+        for (const span of mergeAdjacent(blocks)) { editBuilder.delete(fullLinesRange(document, span.start, span.end)); }
       });
-      refreshGutterDecorations(editor);
-      updateStatusBar(editor.document);
-      vscode.window.showInformationMessage(`IntelliLog: Deleted ${count} log statement(s).`);
+      refresh(document);
+      vscode.window.showInformationMessage(`IntelliLog: Deleted ${countStatements(blocks)} log statement(s).`);
     }),
   );
 }
@@ -220,186 +205,134 @@ export function deactivate() {}
 
 function fetchIntelliLogConfig(): IntelliLogConfig {
   const cfg = vscode.workspace.getConfiguration("intellilog");
+  // `insertColon` replaces the misleadingly named `insertArrow`; honour the old
+  // setting until the user sets the new one.
+  const colon = cfg.inspect<boolean>("insertColon");
+  const explicitColon = colon?.workspaceFolderValue ?? colon?.workspaceValue ?? colon?.globalValue;
+  const insertColon = explicitColon ?? cfg.get<boolean>("insertArrow", true);
   return {
     prefix: cfg.get<string>("logPrefix", "🎯"),
-    suffix: cfg.get<boolean>("insertArrow", true) ? ":" : "",
+    suffix: insertColon ? ":" : "",
     structuredOutput: cfg.get<boolean>("structuredOutput", false),
   };
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-function getLineIndentation(document: vscode.TextDocument, lineNumber: number): string {
-  return document.lineAt(lineNumber).text.match(/^\s*/)?.[0] ?? "";
+function getProviderOrWarn(document: vscode.TextDocument): LanguageProvider | undefined {
+  const provider = providerRegistry.getProviderForLanguage(document.languageId);
+  if (!provider) {
+    vscode.window.showWarningMessage(`IntelliLog: Language '${document.languageId}' is not supported yet!`);
+  }
+  return provider;
+}
+
+function documentLines(document: vscode.TextDocument): string[] {
+  return Array.from({ length: document.lineCount }, (_, i) => document.lineAt(i).text);
+}
+
+function findDocumentLogBlocks(document: vscode.TextDocument): LogBlock[] {
+  const provider = providerRegistry.getProviderForLanguage(document.languageId);
+  return provider ? findLogBlocks(documentLines(document), provider.commentToken, provider.quotes) : [];
+}
+
+function countStatements(blocks: LogBlock[]): number {
+  return blocks.filter((b) => !b.isImport).length;
+}
+
+function indentationOf(line: string): string {
+  return line.match(/^\s*/)?.[0] ?? "";
+}
+
+function indentUnit(editor: vscode.TextEditor): string {
+  return editor.options.insertSpaces === false ? "\t" : " ".repeat(Number(editor.options.tabSize) || 2);
+}
+
+function countLinesInsertedBefore(edits: ImportEdit[], line: number): number {
+  return edits.filter((e) => e.line <= line).reduce((sum, e) => sum + e.text.split("\n").length - 1, 0);
 }
 
 async function fetchHoverDetails(document: vscode.TextDocument, position: vscode.Position): Promise<string> {
-  const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", document.uri, position);
-  if (!hovers || hovers.length === 0) { return ""; }
-  return hovers.map((h) => h.contents.map((c) => typeof c === "string" ? c : (c as vscode.MarkdownString).value).join("")).join("");
+  try {
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", document.uri, position);
+    if (!hovers || hovers.length === 0) { return ""; }
+    return hovers.map((h) => h.contents.map((c) => typeof c === "string" ? c : (c as vscode.MarkdownString).value).join("")).join("");
+  } catch {
+    return "";
+  }
 }
 
-async function buildLogDataForSelection(
-  editor: vscode.TextEditor,
-  selection: vscode.Selection,
-  config: IntelliLogConfig,
-  provider: LanguageProvider,
-  fileName: string,
-): Promise<LogData | null> {
-  const selectedText = editor.document.getText(selection);
-  if (!selectedText) { return null; }
+async function buildLogRequest(editor: vscode.TextEditor, selection: vscode.Selection, provider: LanguageProvider): Promise<LogRequest> {
+  const document = editor.document;
+  // A whole-line selection ends at column 0 of the following line.
+  const lastLine = selection.end.character === 0 && selection.end.line > selection.start.line
+    ? selection.end.line - 1
+    : selection.end.line;
+
+  const startText = document.lineAt(selection.start.line).text;
+  let indentation = indentationOf(startText);
+  // Selected inside a block header (`if x:` / `for (…) {`) — the log belongs inside the block.
+  const lastText = document.lineAt(lastLine).text.trimEnd();
+  const opensBlock = provider.bodyStyle === "colon" ? /:\s*(#.*)?$/.test(lastText) : /\{$/.test(lastText);
+  if (opensBlock) { indentation += indentUnit(editor); }
+
   return {
-    selection,
-    logStatement: provider.buildLogStatement(
-      selectedText,
-      await fetchHoverDetails(editor.document, selection.active),
-      getLineIndentation(editor.document, selection.start.line),
-      config,
-      fileName,
-      selection.end.line + 1,
-    ),
+    selectedText: document.getText(selection),
+    hoverText: await fetchHoverDetails(document, selection.active),
+    indentation,
+    afterLine: lastLine,
   };
 }
 
-function isIntelliLogLine(lineText: string): boolean {
-  const t = lineText.trimEnd();
-  return t.endsWith("// intellilog") || t.endsWith("# intellilog");
-}
+/** Inserts each edit's text before its line, merging edits that target the same line. */
+async function applyInserts(editor: vscode.TextEditor, edits: ImportEdit[]) {
+  const document = editor.document;
+  const byLine = new Map<number, string>();
+  for (const e of edits) { byLine.set(e.line, (byLine.get(e.line) ?? "") + e.text); }
 
-function getCommentChar(languageId: string): string {
-  return languageId === "python" || languageId === "ruby" ? "#" : "//";
-}
-
-// ─── Function Wrap ─────────────────────────────────────────────────────────────
-
-function detectFunction(lineText: string, languageId: string): FunctionInfo | null {
-  const t = lineText.trim();
-
-  if (["javascript", "typescript", "javascriptreact", "typescriptreact"].includes(languageId)) {
-    let m = t.match(/(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/);
-    if (m) { return { name: m[1], params: parseJsParams(m[2]) }; }
-    m = t.match(/(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>/);
-    if (m) { return { name: m[1], params: parseJsParams(m[2]) }; }
-    m = t.match(/^(\w+)\s*\(([^)]*)\)\s*(?::\s*[\w<>[\]|&\s]+)?\{/);
-    if (m && !["if", "for", "while", "switch", "catch", "else"].includes(m[1])) {
-      return { name: m[1], params: parseJsParams(m[2]) };
+  await editor.edit((editBuilder) => {
+    for (const [line, text] of byLine) {
+      if (line < document.lineCount) {
+        editBuilder.insert(new vscode.Position(line, 0), text);
+      } else {
+        // Past the last line (no trailing newline): start a new line instead of
+        // appending to the existing one.
+        const end = document.lineAt(document.lineCount - 1).range.end;
+        editBuilder.insert(end, "\n" + text.replace(/\n$/, ""));
+      }
     }
-  }
+  });
+}
 
-  if (languageId === "python") {
-    const m = t.match(/(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)/);
-    if (m) { return { name: m[1], params: parseJsParams(m[2]).filter((p) => p !== "self" && p !== "cls") }; }
-  }
-
-  if (languageId === "go") {
-    const m = t.match(/func\s+(?:\([^)]+\)\s+)?(\w+)\s*\(([^)]*)\)/);
-    if (m) { return { name: m[1], params: parseGoParams(m[2]) }; }
-  }
-
-  if (languageId === "php") {
-    const m = t.match(/function\s+(\w+)\s*\(([^)]*)\)/);
-    if (m) { return { name: m[1], params: parseJsParams(m[2]) }; }
-  }
-
-  if (languageId === "dart") {
-    const m = t.match(/(?:(?:static|async|Future\S*|void|String|int|bool|double|List|Map|dynamic)\s+)+(\w+)\s*\(([^)]*)\)/);
-    if (m && !["if", "for", "while", "switch"].includes(m[1])) {
-      return { name: m[1], params: parseDartParams(m[2]) };
+async function replaceBlockLines(editor: vscode.TextEditor, blocks: LogBlock[], transform: (line: string) => string) {
+  await editor.edit((editBuilder) => {
+    for (const block of blocks) {
+      for (let i = block.start; i <= block.end; i++) {
+        const line = editor.document.lineAt(i);
+        editBuilder.replace(line.range, transform(line.text));
+      }
     }
-  }
-
-  if (languageId === "ruby") {
-    const m = t.match(/def\s+(\w+)(?:\s*\(([^)]*)\))?/);
-    if (m) { return { name: m[1], params: m[2] ? parseJsParams(m[2]) : [] }; }
-  }
-
-  if (languageId === "rust") {
-    const m = t.match(/(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/);
-    if (m) { return { name: m[1], params: parseRustParams(m[2]) }; }
-  }
-
-  return null;
+  });
 }
 
-function parseJsParams(raw: string): string[] {
-  return raw.split(",").map((p) => p.trim().split(/[:\s=]/)[0].replace(/[^a-zA-Z0-9_$]/g, "").trim()).filter(Boolean);
+/** Merges blocks on consecutive lines so their deletion ranges can't overlap. */
+function mergeAdjacent(blocks: LogBlock[]): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = [];
+  for (const b of blocks) {
+    const last = spans[spans.length - 1];
+    if (last && b.start <= last.end + 1) { last.end = b.end; } else { spans.push({ start: b.start, end: b.end }); }
+  }
+  return spans;
 }
 
-function parseGoParams(raw: string): string[] {
-  return raw.split(",").map((p) => p.trim().split(/\s+/)[0]).filter(Boolean);
-}
-
-function parseDartParams(raw: string): string[] {
-  return raw.split(",").map((p) => {
-    const withoutDefault = p.split("=")[0];
-    const clean = withoutDefault.replace(/[{}[\]]/g, "").trim();
-    const parts = clean.split(/\s+/).filter(Boolean);
-    return parts[parts.length - 1]?.replace(/[^a-zA-Z0-9_]/g, "") ?? "";
-  }).filter((p) => p && p !== "this");
-}
-
-function parseRustParams(raw: string): string[] {
-  return raw.split(",").map((p) => {
-    const name = p.trim().split(":")[0].replace(/^mut\s+/, "").replace(/^&(mut\s+)?/, "").trim();
-    return name.replace(/[^a-zA-Z0-9_]/g, "");
-  }).filter((p) => p && p !== "self");
-}
-
-function buildFunctionEntryLog(
-  info: FunctionInfo,
-  languageId: string,
-  config: IntelliLogConfig,
-  fileName: string,
-  lineNumber: number,
-  indentation: string,
-): string {
-  const { prefix } = config;
-  const loc = `[${fileName}:${lineNumber}]`;
-  const MARKER_JS = "// intellilog";
-  const MARKER_PY = "# intellilog";
-
-  if (["javascript", "typescript", "javascriptreact", "typescriptreact"].includes(languageId)) {
-    const paramsObj = info.params.length > 0 ? `, { ${info.params.join(", ")} }` : "";
-    return `${indentation}console.log('${prefix} ${loc} → ${info.name} called'${paramsObj}); ${MARKER_JS}\n`;
+/** Range covering whole lines `start..end`, including one line break so no blank line is left. */
+function fullLinesRange(document: vscode.TextDocument, start: number, end: number): vscode.Range {
+  if (end + 1 < document.lineCount) {
+    return new vscode.Range(start, 0, end + 1, 0);
   }
-
-  if (languageId === "python") {
-    const pyParams = info.params.length > 0 ? ` | ${info.params.map((p) => `${p}={${p}}`).join(", ")}` : "";
-    return `${indentation}print(f"${prefix} ${loc} → ${info.name} called${pyParams}") ${MARKER_PY}\n`;
+  const endPosition = document.lineAt(end).range.end;
+  if (start > 0) {
+    return new vscode.Range(document.lineAt(start - 1).range.end, endPosition);
   }
-
-  if (languageId === "go") {
-    if (info.params.length > 0) {
-      const fmtStr = info.params.map((p) => `${p}=%v`).join(" ");
-      return `${indentation}fmt.Printf("${prefix} ${loc} → ${info.name} called ${fmtStr}\\n", ${info.params.join(", ")}) ${MARKER_JS}\n`;
-    }
-    return `${indentation}fmt.Println("${prefix} ${loc} → ${info.name} called") ${MARKER_JS}\n`;
-  }
-
-  if (languageId === "php") {
-    const phpParams = info.params.length > 0
-      ? ` . json_encode([${info.params.map((p) => `'${p}' => $${p}`).join(", ")}])`
-      : "";
-    return `${indentation}echo "${prefix} ${loc} → ${info.name} called"${phpParams} . "\\n"; ${MARKER_JS}\n`;
-  }
-
-  if (languageId === "dart") {
-    const dartParams = info.params.length > 0 ? ` ${info.params.map((p) => `${p}=\$${p}`).join(", ")}` : "";
-    return `${indentation}debugPrint('${prefix} ${loc} → ${info.name} called${dartParams}'); ${MARKER_JS}\n`;
-  }
-
-  if (languageId === "ruby") {
-    const rubyParams = info.params.length > 0 ? ` #{${info.params.map((p) => `"${p}=\#{${p}}"`).join(', ')}.join(', ')}` : "";
-    return `${indentation}puts "${prefix} ${loc} → ${info.name} called${rubyParams}" ${MARKER_PY}\n`;
-  }
-
-  if (languageId === "rust") {
-    if (info.params.length > 0) {
-      const fmtStr = info.params.map((p) => `${p}={:?}`).join(", ");
-      return `${indentation}println!("${prefix} ${loc} → ${info.name} called ${fmtStr}", ${info.params.join(", ")}); ${MARKER_JS}\n`;
-    }
-    return `${indentation}println!("${prefix} ${loc} → ${info.name} called"); ${MARKER_JS}\n`;
-  }
-
-  return "";
+  return new vscode.Range(new vscode.Position(start, 0), endPosition);
 }
